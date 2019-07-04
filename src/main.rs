@@ -188,11 +188,15 @@ enum SExp<'a> {
 fn parse_sexp_branch<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> Vec<SExp<'a>> {
     let mut res = Vec::new();
 
-    while let Some(token) = tokens.next() {
-        match token {
-            Token::LeftParen => res.push(SExp::Branch(parse_sexp_branch(&mut tokens))),
-            Token::RightParen => break,
-            Token::Word(a) => res.push(SExp::Leaf(a))
+    loop {
+        if let Some(token) = tokens.next() {
+            match token {
+                Token::LeftParen => res.push(SExp::Branch(parse_sexp_branch(&mut tokens))),
+                Token::RightParen => break,
+                Token::Word(a) => res.push(SExp::Leaf(a))
+            }
+        } else {
+            panic!("missing close paren")
         }
     }
 
@@ -200,11 +204,15 @@ fn parse_sexp_branch<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> Vec<SExp<'a
 }
 
 fn parse_sexp<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> SExp<'a> {
-    match tokens.next().unwrap() {
+    let res = match tokens.next().unwrap() {
         Token::LeftParen => SExp::Branch(parse_sexp_branch(&mut tokens)),
         Token::Word(a) => SExp::Leaf(a),
         Token::RightParen => panic!("unopened right paren")
-    }
+    };
+
+    assert!(tokens.next() == None);
+    
+    res
 }
 
 fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Box<Expr<'a>> {
