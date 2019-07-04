@@ -9,7 +9,7 @@ extern crate lazy_static;
 type Env<'a> = HashMap<&'a str, Value<'a>>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr<'a> {
+pub enum ExprKind<'a> {
     Add(Box<Expr<'a>>, Box<Expr<'a>>),
     Sub(Box<Expr<'a>>, Box<Expr<'a>>),
     Mul(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -19,6 +19,12 @@ pub enum Expr<'a> {
     Call(Box<Expr<'a>>, Box<Expr<'a>>),
     Id(&'a str),
     Lit(f64),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Expr<'a> {
+    source: &'a str,
+    kind: ExprKind<'a>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,13 +99,13 @@ impl<'a> ops::Mul<Value<'a>> for Value<'a> {
 }
 
 pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
-    match e {
-        Expr::Lit(x) => Value::Num(*x),
-        Expr::Add(left, right) => eval(left, env) + eval(right, env),
-        Expr::Sub(left, right) => eval(left, env) - eval(right, env),
-        Expr::Mul(left, right) => eval(left, env) * eval(right, env),
-        Expr::Div(left, right) => eval(left, env) / eval(right, env),
-        Expr::If0(cond, t, f) => {
+    match &e.kind {
+        ExprKind::Lit(x) => Value::Num(*x),
+        ExprKind::Add(left, right) => eval(left, env) + eval(right, env),
+        ExprKind::Sub(left, right) => eval(left, env) - eval(right, env),
+        ExprKind::Mul(left, right) => eval(left, env) * eval(right, env),
+        ExprKind::Div(left, right) => eval(left, env) / eval(right, env),
+        ExprKind::If0(cond, t, f) => {
             if let Value::Num(n) = eval(cond, env) {
                 if n == 0.0 {
                     eval(t, env)
@@ -110,9 +116,9 @@ pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
                 panic!("")
             }
         }
-        Expr::Id(id) => get_id(id, &env),
-        Expr::Lambda(id, expr) => Value::Clos(id, Rc::new(env.clone()), Rc::new(*expr.clone())),
-        Expr::Call(func, arg) => {
+        ExprKind::Id(id) => get_id(id, &env),
+        ExprKind::Lambda(id, expr) => Value::Clos(id, Rc::new(env.clone()), Rc::new(*expr.clone())),
+        ExprKind::Call(func, arg) => {
             let argv = eval(arg, env);
             if let Value::Clos(argn, lex_env, body) = eval(func, env) {
                 eval(&body, &add_to_env(argn, argv, &*lex_env))
@@ -137,10 +143,10 @@ fn get_id<'a, 'b>(id: &str, env: &'b Env<'a>) -> Value<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-enum Token<'a> {
-    LeftParen,
-    RightParen,
-    Word(&'a str),
+enum Token {
+    LeftParen(usize),
+    RightParen(usize),
+    Word(usize, usize),
 }
 
 struct TokenStream<'a> {
@@ -161,7 +167,7 @@ impl<'a> TokenStream<'a> {
 }
 
 impl<'a> Iterator for TokenStream<'a> {
-    type Item = Token<'a>;
+    type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut in_progress = false;
@@ -173,20 +179,20 @@ impl<'a> Iterator for TokenStream<'a> {
                     '(' => {
                         if in_progress {
                             self.pending = Some((index, current));
-                            return Some(Token::Word(&self.source[start_idx..index]));
+                            return Some(Token::Word(start_idx, index));
                         }
-                        return Some(Token::LeftParen);
+                        return Some(Token::LeftParen(index));
                     }
                     ')' => {
                         if in_progress {
                             self.pending = Some((index, current));
-                            return Some(Token::Word(&self.source[start_idx..index]));
+                            return Some(Token::Word(start_idx, index));
                         }
-                        return Some(Token::RightParen);
+                        return Some(Token::RightParen(index));
                     }
                     ' ' | '\t' | '\r' | '\n' => {
                         if in_progress {
-                            return Some(Token::Word(&self.source[start_idx..index]));
+                            return Some(Token::Word(start_idx, index));
                         }
                     }
                     _ => {
@@ -198,7 +204,7 @@ impl<'a> Iterator for TokenStream<'a> {
                 },
                 None => {
                     if in_progress {
-                        return Some(Token::Word(&self.source[start_idx..]));
+                        return Some(Token::Word(start_idx, self.source.len()));
                     } else {
                         return None;
                     }
@@ -219,32 +225,41 @@ fn tokenize<'a>(program: &'a str) -> TokenStream<'a> {
 #[derive(Debug, PartialEq)]
 enum SExp<'a> {
     Leaf(&'a str),
-    Branch(Vec<SExp<'a>>),
+    Branch(&'a str, Vec<SExp<'a>>),
 }
 
-fn parse_sexp_branch<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> Vec<SExp<'a>> {
+fn parse_sexp_branch<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> (usize, Vec<SExp<'a>>) {
     let mut res = Vec::new();
-
+    let last_index: usize;
     loop {
         if let Some(token) = tokens.next() {
             match token {
-                Token::LeftParen => res.push(SExp::Branch(parse_sexp_branch(&mut tokens))),
-                Token::RightParen => break,
-                Token::Word(a) => res.push(SExp::Leaf(a)),
+                Token::LeftParen(idx) => {
+                    let (last, child) = parse_sexp_branch(&mut tokens);
+                    res.push(SExp::Branch(&tokens.source[idx..last + 1], child))
+                }
+                Token::Word(left, right) => res.push(SExp::Leaf(&tokens.source[left..right])),
+                Token::RightParen(idx) => {
+                    last_index = idx;
+                    break;
+                }
             }
         } else {
             panic!("missing close paren")
         }
     }
 
-    res
+    (last_index, res)
 }
 
 fn parse_sexp<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> SExp<'a> {
     let res = match tokens.next().unwrap() {
-        Token::LeftParen => SExp::Branch(parse_sexp_branch(&mut tokens)),
-        Token::Word(a) => SExp::Leaf(a),
-        Token::RightParen => panic!("unopened right paren"),
+        Token::LeftParen(idx) => {
+            let (last, child) = parse_sexp_branch(&mut tokens);
+            SExp::Branch(&tokens.source[idx..last + 1], child)
+        }
+        Token::Word(left, right) => SExp::Leaf(&tokens.source[left..right]),
+        Token::RightParen(_) => panic!("unopened right paren"),
     };
 
     assert!(tokens.next() == None);
@@ -254,41 +269,68 @@ fn parse_sexp<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> SExp<'a> {
 fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
     match sexp {
         SExp::Leaf(a) => match a.parse() {
-            Ok(d) => Expr::Lit(d),
-            Err(_) => Expr::Id(a),
+            Ok(d) => Expr {
+                source: a,
+                kind: ExprKind::Lit(d),
+            },
+            Err(_) => Expr {
+                source: a,
+                kind: ExprKind::Id(a),
+            },
         },
-        SExp::Branch(elements) => match &elements[0] {
-            SExp::Leaf("+") => Expr::Add(
-                Box::new(sexp_to_expr(&elements[1])),
-                Box::new(sexp_to_expr(&elements[2])),
-            ),
-            SExp::Leaf("-") => Expr::Sub(
-                Box::new(sexp_to_expr(&elements[1])),
-                Box::new(sexp_to_expr(&elements[2])),
-            ),
-            SExp::Leaf("*") => Expr::Mul(
-                Box::new(sexp_to_expr(&elements[1])),
-                Box::new(sexp_to_expr(&elements[2])),
-            ),
-            SExp::Leaf("/") => Expr::Div(
-                Box::new(sexp_to_expr(&elements[1])),
-                Box::new(sexp_to_expr(&elements[2])),
-            ),
-            SExp::Leaf("if0") => Expr::If0(
-                Box::new(sexp_to_expr(&elements[1])),
-                Box::new(sexp_to_expr(&elements[2])),
-                Box::new(sexp_to_expr(&elements[3])),
-            ),
-            SExp::Leaf("let") => Expr::Call(
-                Box::new(Expr::Lambda(
-                    match &elements[1] {
-                        SExp::Leaf(x) => x,
-                        _ => panic!("not a name to bind"),
-                    },
+        SExp::Branch(source, elements) => match &elements[0] {
+            SExp::Leaf("+") => Expr {
+                source: source,
+                kind: ExprKind::Add(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf("-") => Expr {
+                source: source,
+                kind: ExprKind::Sub(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf("*") => Expr {
+                source: source,
+                kind: ExprKind::Mul(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf("/") => Expr {
+                source: source,
+                kind: ExprKind::Div(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf("if0") => Expr {
+                source: source,
+                kind: ExprKind::If0(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
                     Box::new(sexp_to_expr(&elements[3])),
-                )),
-                Box::new(sexp_to_expr(&elements[2])),
-            ),
+                ),
+            },
+            SExp::Leaf("let") => Expr {
+                source: source,
+                kind: ExprKind::Call(
+                    Box::new(Expr {
+                        source: source,
+                        kind: ExprKind::Lambda(
+                            match &elements[1] {
+                                SExp::Leaf(x) => x,
+                                _ => panic!("not a name to bind"),
+                            },
+                            Box::new(sexp_to_expr(&elements[3])),
+                        ),
+                    }),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
             SExp::Leaf("letrec") => {
                 lazy_static! {
                     static ref Y: Expr<'static> =
@@ -298,27 +340,45 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                     SExp::Leaf(x) => x,
                     _ => panic!("not a name to bind"),
                 };
-                let call_y = Expr::Call(
+                let call_y = ExprKind::Call(
                     Box::new(Y.clone()),
-                    Box::new(Expr::Lambda(n, Box::new(sexp_to_expr(&elements[2])))),
+                    Box::new(Expr {
+                        source: source,
+                        kind: ExprKind::Lambda(n, Box::new(sexp_to_expr(&elements[2]))),
+                    }),
                 );
 
-                Expr::Call(
-                    Box::new(Expr::Lambda(n, Box::new(sexp_to_expr(&elements[3])))),
-                    Box::new(call_y),
-                )
+                Expr {
+                    source: source,
+                    kind: ExprKind::Call(
+                        Box::new(Expr {
+                            source: source,
+                            kind: ExprKind::Lambda(n, Box::new(sexp_to_expr(&elements[3]))),
+                        }),
+                        Box::new(Expr {
+                            source: source,
+                            kind: call_y,
+                        }),
+                    ),
+                }
             }
-            SExp::Leaf("lambda") => Expr::Lambda(
-                match &elements[1] {
-                    SExp::Leaf(x) => x,
-                    _ => panic!("not a name to bind"),
-                },
-                Box::new(sexp_to_expr(&elements[2])),
-            ),
-            a => Expr::Call(
-                Box::new(sexp_to_expr(&a)),
-                Box::new(sexp_to_expr(&elements[1])),
-            ),
+            SExp::Leaf("lambda") => Expr {
+                source: source,
+                kind: ExprKind::Lambda(
+                    match &elements[1] {
+                        SExp::Leaf(x) => x,
+                        _ => panic!("not a name to bind"),
+                    },
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            a => Expr {
+                source: source,
+                kind: ExprKind::Call(
+                    Box::new(sexp_to_expr(&a)),
+                    Box::new(sexp_to_expr(&elements[1])),
+                ),
+            },
         },
     }
 }
@@ -339,14 +399,59 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn lit<'a>(x: f64) -> Box<Expr<'a>> {
-        Box::new(Expr::Lit(x))
+    fn add<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Add(Box::new(l), Box::new(r)),
+        }
+    }
+    fn sub<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Sub(Box::new(l), Box::new(r)),
+        }
+    }
+    fn mul<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Mul(Box::new(l), Box::new(r)),
+        }
+    }
+    fn div<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Div(Box::new(l), Box::new(r)),
+        }
+    }
+    fn lit<'a>(x: f64) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Lit(x),
+        }
+    }
+    fn id<'a>(x: &'a str) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Id(x),
+        }
+    }
+    fn lambda<'a>(x: &'a str, e: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Lambda(x, Box::new(e)),
+        }
+    }
+    fn call<'a>(a: Expr<'a>, b: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Call(Box::new(a), Box::new(b)),
+        }
     }
 
     #[test]
     fn test_add() {
         assert_eq!(
-            eval(&Expr::Add(lit(17.0), lit(3.2)), &HashMap::new()),
+            eval(&add(lit(17.0), lit(3.2)), &HashMap::new()),
             Value::Num(20.2)
         );
     }
@@ -354,10 +459,7 @@ mod tests {
     #[test]
     fn test_add_sub() {
         assert_eq!(
-            eval(
-                &Expr::Add(lit(17.0), Box::new(Expr::Sub(lit(7.5), lit(7.0)))),
-                &HashMap::new()
-            ),
+            eval(&add(lit(17.0), sub(lit(7.5), lit(7.0))), &HashMap::new()),
             Value::Num(17.5)
         );
     }
@@ -366,7 +468,7 @@ mod tests {
     fn test_lookup() {
         let env = HashMap::unit("x", Value::Num(14.0));
 
-        assert_eq!(eval(&Expr::Id("x"), &env), Value::Num(14.0))
+        assert_eq!(eval(&id("x"), &env), Value::Num(14.0))
     }
 
     #[test]
@@ -374,16 +476,16 @@ mod tests {
     fn test_lookup_not_found() {
         let env = HashMap::unit("x", Value::Num(14.0));
 
-        assert_eq!(eval(&Expr::Id("y"), &env), Value::Num(14.0))
+        assert_eq!(eval(&id("y"), &env), Value::Num(14.0))
     }
 
     #[test]
     fn test_lambda() {
-        let func = Expr::Lambda("x", Box::new(Expr::Add(lit(17.0), Box::new(Expr::Id("x")))));
+        let func = lambda("x", add(lit(17.0), id("x")));
         if let Value::Clos(arg, env, body) = eval(&func, &HashMap::new()) {
             assert_eq!(arg, "x");
             assert_eq!(*env, HashMap::new());
-            assert_eq!(*body, Expr::Add(lit(17.0), Box::new(Expr::Id("x"))));
+            assert_eq!(*body, add(lit(17.0), id("x")));
         } else {
             panic!("didn't eval to closure")
         }
@@ -392,35 +494,29 @@ mod tests {
     #[test]
     fn test_math() {
         assert_eq!(
-            eval(&Expr::Add(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&add(lit(3.), lit(5.)), &HashMap::new()),
             Value::Num(3. + 5.)
         );
         assert_eq!(
-            eval(&Expr::Sub(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&sub(lit(3.), lit(5.)), &HashMap::new()),
             Value::Num(3. - 5.)
         );
         assert_eq!(
-            eval(&Expr::Mul(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&mul(lit(3.), lit(5.)), &HashMap::new()),
             Value::Num(3. * 5.)
         );
         assert_eq!(
-            eval(&Expr::Div(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&div(lit(3.), lit(5.)), &HashMap::new()),
             Value::Num(3. / 5.)
         );
     }
 
     #[test]
     fn test_lambda_call() {
-        let func = Box::new(Expr::Lambda(
-            "x",
-            Box::new(Expr::Add(lit(17.0), Box::new(Expr::Id("x")))),
-        ));
+        let func = lambda("x", add(lit(17.0), id("x")));
         let arg = lit(11.0);
 
-        assert_eq!(
-            eval(&Expr::Call(func, arg), &HashMap::new()),
-            Value::Num(28.0)
-        )
+        assert_eq!(eval(&call(func, arg), &HashMap::new()), Value::Num(28.0))
     }
 
     #[test]
@@ -429,7 +525,11 @@ mod tests {
 
         assert_eq!(
             tokens,
-            vec![Token::LeftParen, Token::Word("hello"), Token::RightParen]
+            vec![
+                Token::LeftParen(0),
+                Token::Word(2, 2 + 5),
+                Token::RightParen(8)
+            ]
         )
     }
 
@@ -439,7 +539,7 @@ mod tests {
 
         assert_eq!(
             tokens,
-            vec![Token::LeftParen, Token::Word("hello"), Token::RightParen]
+            vec![Token::LeftParen(0), Token::Word(1, 6), Token::RightParen(6)]
         )
     }
 
@@ -448,7 +548,7 @@ mod tests {
         let mut tokens = tokenize("(hello)");
         let exp = parse_sexp(&mut tokens);
 
-        assert_eq!(exp, SExp::Branch(vec![SExp::Leaf("hello")]))
+        assert_eq!(exp, SExp::Branch("(hello)", vec![SExp::Leaf("hello")]))
     }
     #[test]
     fn test_parse_less_simple() {
@@ -457,10 +557,16 @@ mod tests {
 
         assert_eq!(
             exp,
-            SExp::Branch(vec![
-                SExp::Leaf("hello"),
-                SExp::Branch(vec![SExp::Leaf("world"), SExp::Leaf("you")])
-            ])
+            SExp::Branch(
+                "(hello(  world you   ))",
+                vec![
+                    SExp::Leaf("hello"),
+                    SExp::Branch(
+                        "(  world you   )",
+                        vec![SExp::Leaf("world"), SExp::Leaf("you")]
+                    )
+                ]
+            )
         )
     }
 
@@ -471,46 +577,115 @@ mod tests {
 
         assert_eq!(
             exp,
-            SExp::Branch(vec![
-                SExp::Leaf("hello"),
-                SExp::Branch(vec![
-                    SExp::Branch(vec![SExp::Leaf("darkness"),]),
-                    SExp::Leaf("my"),
-                    SExp::Branch(vec![
-                        SExp::Leaf("old"),
-                        SExp::Leaf("friend"),
-                        SExp::Branch(vec![SExp::Leaf("i've"), SExp::Leaf("come"),])
-                    ])
-                ])
-            ])
+            SExp::Branch(
+                "(hello ((darkness) my (old friend (i've come))))",
+                vec![
+                    SExp::Leaf("hello"),
+                    SExp::Branch(
+                        "((darkness) my (old friend (i've come)))",
+                        vec![
+                            SExp::Branch("(darkness)", vec![SExp::Leaf("darkness"),]),
+                            SExp::Leaf("my"),
+                            SExp::Branch(
+                                "(old friend (i've come))",
+                                vec![
+                                    SExp::Leaf("old"),
+                                    SExp::Leaf("friend"),
+                                    SExp::Branch(
+                                        "(i've come)",
+                                        vec![SExp::Leaf("i've"), SExp::Leaf("come"),]
+                                    )
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
         )
     }
 
     #[test]
     fn test_parse_program() {
-        assert_eq!(parse("(+ 1 1)"), Expr::Add(lit(1.), lit(1.)))
+        assert_eq!(
+            parse("(+ 1 1)"),
+            Expr {
+                source: "(+ 1 1)",
+                kind: ExprKind::Add(
+                    Box::new(Expr {
+                        source: "1",
+                        kind: ExprKind::Lit(1.0)
+                    }),
+                    Box::new(Expr {
+                        source: "1",
+                        kind: ExprKind::Lit(1.0)
+                    })
+                )
+            }
+        )
     }
 
     #[test]
     fn test_parse_clos() {
         assert_eq!(
             parse("(lambda x (+ 1 x))"),
-            Expr::Lambda("x", Box::new(parse("(+ 1 x)")))
+            Expr {
+                source: "(lambda x (+ 1 x))",
+                kind: ExprKind::Lambda(
+                    "x",
+                    Box::new(Expr {
+                        source: "(+ 1 x)",
+                        kind: ExprKind::Add(
+                            Box::new(Expr {
+                                source: "1",
+                                kind: ExprKind::Lit(1.0)
+                            }),
+                            Box::new(Expr {
+                                source: "x",
+                                kind: ExprKind::Id("x")
+                            })
+                        )
+                    })
+                )
+            }
         )
     }
     #[test]
     fn test_parse_id() {
-        assert_eq!(parse("x"), Expr::Id("x"))
+        assert_eq!(
+            parse("x"),
+            Expr {
+                source: "x",
+                kind: ExprKind::Id("x")
+            }
+        )
     }
     #[test]
     fn test_parse_lit() {
-        assert_eq!(parse("1"), Expr::Lit(1.))
+        assert_eq!(
+            parse("1"),
+            Expr {
+                source: "1",
+                kind: ExprKind::Lit(1.0)
+            }
+        )
     }
     #[test]
     fn test_parse_call() {
         assert_eq!(
             parse("(f x)"),
-            Expr::Call(Box::new(Expr::Id("f")), Box::new(Expr::Id("x")))
+            Expr {
+                source: "(f x)",
+                kind: ExprKind::Call(
+                    Box::new(Expr {
+                        source: "f",
+                        kind: ExprKind::Id("f")
+                    }),
+                    Box::new(Expr {
+                        source: "x",
+                        kind: ExprKind::Id("x")
+                    })
+                )
+            }
         )
     }
 
@@ -555,7 +730,7 @@ mod tests {
                     (+ x (f (- x 1))))))",
         );
 
-        let call_with_3 = Expr::Call(Box::new(Expr::Call(Box::new(y), Box::new(sum))), lit(3.0));
+        let call_with_3 = call(call(y, sum), lit(3.0));
 
         assert_eq!(eval(&call_with_3, &HashMap::new()), Value::Num(6.0));
     }
@@ -567,23 +742,19 @@ mod tests {
         let mess = parse(s);
 
         let base = s.as_ptr() as usize;
-        match mess {
-            Expr::Add(_, r) => {
-                match *r {
-                    Expr::Mul(l, _) => {
-                        match *l {
-                            Expr::Id(x) => {
-                                let id_loc = x.as_ptr() as usize;
-                                assert_eq!(x, "abce");
-                                assert_eq!(id_loc - base, 11)
-                            },
-                            _ => panic!()
-                        }
-                    },
-                    _ => panic!()
-                }
+        match mess.kind {
+            ExprKind::Add(_, r) => match r.kind {
+                ExprKind::Mul(l, _) => match l.kind {
+                    ExprKind::Id(x) => {
+                        let id_loc = x.as_ptr() as usize;
+                        assert_eq!(x, "abce");
+                        assert_eq!(id_loc - base, 11)
+                    }
+                    _ => panic!(),
+                },
+                _ => panic!(),
             },
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
