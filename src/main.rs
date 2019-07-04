@@ -187,6 +187,7 @@ fn get_id<'a, 'b>(id: &str, env: &'b Env<'a>) -> Value<'a> {
 enum Token {
     LeftParen(usize),
     RightParen(usize),
+    String(usize, usize),
     Word(usize, usize),
 }
 
@@ -214,35 +215,53 @@ impl<'a> Iterator for TokenStream<'a> {
         let mut in_progress = false;
         let mut start_idx: usize = 0;
 
+        let mut string_in_progress = false;
+
         loop {
             match self.next_char() {
-                Some((index, current)) => match current {
-                    '(' => {
-                        if in_progress {
-                            self.pending = Some((index, current));
-                            return Some(Token::Word(start_idx, index));
+                Some((index, current)) => {
+                    if string_in_progress {
+                        if current == '"' {
+                            return Some(Token::String(start_idx, index + 1));
                         }
-                        return Some(Token::LeftParen(index));
-                    }
-                    ')' => {
-                        if in_progress {
-                            self.pending = Some((index, current));
-                            return Some(Token::Word(start_idx, index));
+                    } else {
+                        match current {
+                            '(' => {
+                                if in_progress {
+                                    self.pending = Some((index, current));
+                                    return Some(Token::Word(start_idx, index));
+                                }
+                                return Some(Token::LeftParen(index));
+                            }
+                            ')' => {
+                                if in_progress {
+                                    self.pending = Some((index, current));
+                                    return Some(Token::Word(start_idx, index));
+                                }
+                                return Some(Token::RightParen(index));
+                            }
+                            '"' => {
+                                if in_progress {
+                                    self.pending = Some((index, current));
+                                    return Some(Token::Word(start_idx, index));
+                                }
+                                string_in_progress = true;
+                                start_idx = index;
+                            }
+                            ' ' | '\t' | '\r' | '\n' => {
+                                if in_progress {
+                                    return Some(Token::Word(start_idx, index));
+                                }
+                            }
+                            _ => {
+                                if !in_progress {
+                                    start_idx = index
+                                }
+                                in_progress = true
+                            }
                         }
-                        return Some(Token::RightParen(index));
                     }
-                    ' ' | '\t' | '\r' | '\n' => {
-                        if in_progress {
-                            return Some(Token::Word(start_idx, index));
-                        }
-                    }
-                    _ => {
-                        if !in_progress {
-                            start_idx = index
-                        }
-                        in_progress = true
-                    }
-                },
+                }
                 None => {
                     if in_progress {
                         return Some(Token::Word(start_idx, self.source.len()));
@@ -266,6 +285,7 @@ fn tokenize<'a>(program: &'a str) -> TokenStream<'a> {
 #[derive(Debug, PartialEq)]
 enum SExp<'a> {
     Leaf(&'a str),
+    StringLeaf(&'a str),
     Branch(&'a str, Vec<SExp<'a>>),
 }
 
@@ -278,6 +298,9 @@ fn parse_sexp_branch<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> (usize, Vec
                 Token::LeftParen(idx) => {
                     let (last, child) = parse_sexp_branch(&mut tokens);
                     res.push(SExp::Branch(&tokens.source[idx..last + 1], child))
+                }
+                Token::String(left, right) => {
+                    res.push(SExp::StringLeaf(&tokens.source[left..right]))
                 }
                 Token::Word(left, right) => res.push(SExp::Leaf(&tokens.source[left..right])),
                 Token::RightParen(idx) => {
@@ -300,6 +323,7 @@ fn parse_sexp<'a, 'b>(mut tokens: &'b mut TokenStream<'a>) -> SExp<'a> {
             SExp::Branch(&tokens.source[idx..last + 1], child)
         }
         Token::Word(left, right) => SExp::Leaf(&tokens.source[left..right]),
+        Token::String(left, right) => SExp::StringLeaf(&tokens.source[left..right]),
         Token::RightParen(_) => panic!("unopened right paren"),
     };
 
@@ -318,6 +342,10 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                 source: a,
                 kind: ExprKind::Id(a),
             },
+        },
+        SExp::StringLeaf(s) => Expr {
+            source: s,
+            kind: ExprKind::Lit(LiteralKind::String(s)),
         },
         SExp::Branch(source, elements) => match &elements[0] {
             SExp::Leaf("+") => Expr {
@@ -575,10 +603,7 @@ mod tests {
     #[test]
     fn test_concat() {
         assert_eq!(
-            eval(
-                &concat(string_v("1"), string_v("2")),
-                &HashMap::new()
-            ),
+            eval(&concat(string_v("1"), string_v("2")), &HashMap::new()),
             Value::String("12".to_string())
         );
     }
@@ -746,6 +771,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_with_string() {
+        let mut tokens = tokenize(r#"(hello("a"  world "are"you   )"boy")"#);
+        let exp = parse_sexp(&mut tokens);
+
+        assert_eq!(
+            exp,
+            SExp::Branch(
+                r#"(hello("a"  world "are"you   )"boy")"#,
+                vec![
+                    SExp::Leaf("hello"),
+                    SExp::Branch(
+                        r#"("a"  world "are"you   )"#,
+                        vec![
+                            SExp::StringLeaf(r#""a""#),
+                            SExp::Leaf("world"),
+                            SExp::StringLeaf(r#""are""#),
+                            SExp::Leaf("you")
+                        ]
+                    ),
+                    SExp::StringLeaf(r#""boy""#)
+                ]
+            )
+        )
+    }
+
+    #[test]
     fn test_parse_complex() {
         let mut tokens = tokenize("(hello ((darkness) my (old friend (i've come))))");
         let exp = parse_sexp(&mut tokens);
@@ -776,6 +827,34 @@ mod tests {
                     )
                 ]
             )
+        )
+    }
+
+    #[test]
+    fn test_parse_string() {
+        assert_eq!(
+            parse(r#""hello""#),
+            Expr {
+                source: r#""hello""#,
+                kind: ExprKind::Lit(LiteralKind::String(r#""hello""#))
+            }
+        );
+
+        assert_eq!(
+            parse(r#"(+ "hello" "world")"#),
+            Expr {
+                source: r#"(+ "hello" "world")"#,
+                kind: ExprKind::Add(
+                    Box::new(Expr {
+                        source: r#""hello""#,
+                        kind: ExprKind::Lit(LiteralKind::String(r#""hello""#))
+                    }),
+                    Box::new(Expr {
+                        source: r#""world""#,
+                        kind: ExprKind::Lit(LiteralKind::String(r#""world""#))
+                    })
+                )
+            }
         )
     }
 
