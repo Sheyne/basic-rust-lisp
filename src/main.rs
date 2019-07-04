@@ -390,7 +390,7 @@ pub fn parse<'a>(program: &'a str) -> Expr<'a> {
 }
 
 fn main() {
-    let y = parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))");
+    let y = parse("(letrec f 1 2)");
 
     println!("{:?}", y);
 }
@@ -656,6 +656,16 @@ mod tests {
             Expr {
                 source: "x",
                 kind: ExprKind::Id("x")
+            }
+        )
+    }
+    #[test]
+    fn test_parse_id_uni() {
+        assert_eq!(
+            parse("∂x∂"),
+            Expr {
+                source: "∂x∂",
+                kind: ExprKind::Id("∂x∂")
             }
         )
     }
