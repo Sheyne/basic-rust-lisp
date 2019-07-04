@@ -52,7 +52,6 @@ impl<'a> ops::Add<Value<'a>> for Value<'a> {
         }
     }
 }
-
 impl<'a> ops::Sub<Value<'a>> for Value<'a> {
     type Output = Self;
 
@@ -292,7 +291,8 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
             ),
             SExp::Leaf("letrec") => {
                 lazy_static! {
-                    static ref Y : Expr<'static> = parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))");
+                    static ref Y: Expr<'static> =
+                        parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))");
                 }
                 let n = match &elements[1] {
                     SExp::Leaf(x) => x,
@@ -391,10 +391,22 @@ mod tests {
 
     #[test]
     fn test_math() {
-        assert_eq!(eval(&Expr::Add(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. + 5.));
-        assert_eq!(eval(&Expr::Sub(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. - 5.));
-        assert_eq!(eval(&Expr::Mul(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. * 5.));
-        assert_eq!(eval(&Expr::Div(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. / 5.));
+        assert_eq!(
+            eval(&Expr::Add(lit(3.), lit(5.)), &HashMap::new()),
+            Value::Num(3. + 5.)
+        );
+        assert_eq!(
+            eval(&Expr::Sub(lit(3.), lit(5.)), &HashMap::new()),
+            Value::Num(3. - 5.)
+        );
+        assert_eq!(
+            eval(&Expr::Mul(lit(3.), lit(5.)), &HashMap::new()),
+            Value::Num(3. * 5.)
+        );
+        assert_eq!(
+            eval(&Expr::Div(lit(3.), lit(5.)), &HashMap::new()),
+            Value::Num(3. / 5.)
+        );
     }
 
     #[test]
@@ -546,6 +558,33 @@ mod tests {
         let call_with_3 = Expr::Call(Box::new(Expr::Call(Box::new(y), Box::new(sum))), lit(3.0));
 
         assert_eq!(eval(&call_with_3, &HashMap::new()), Value::Num(6.0));
+    }
+
+    #[test]
+    fn test_tracks_locations() {
+        //       012345678901234567890
+        let s = "( + 17 (*  abce 6  ))";
+        let mess = parse(s);
+
+        let base = s.as_ptr() as usize;
+        match mess {
+            Expr::Add(_, r) => {
+                match *r {
+                    Expr::Mul(l, _) => {
+                        match *l {
+                            Expr::Id(x) => {
+                                let id_loc = x.as_ptr() as usize;
+                                assert_eq!(x, "abce");
+                                assert_eq!(id_loc - base, 11)
+                            },
+                            _ => panic!()
+                        }
+                    },
+                    _ => panic!()
+                }
+            },
+            _ => panic!()
+        }
     }
 
     #[test]
