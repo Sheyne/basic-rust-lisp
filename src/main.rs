@@ -1,8 +1,8 @@
 use im::hashmap::HashMap;
+use std::cmp::Ordering;
 use std::ops;
 use std::rc::Rc;
 use std::str::CharIndices;
-use std::cmp::Ordering;
 
 #[macro_use]
 extern crate lazy_static;
@@ -11,6 +11,7 @@ type Env<'a> = HashMap<&'a str, Value<'a>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind<'a> {
+    Not(Box<Expr<'a>>),
     Lt(Box<Expr<'a>>, Box<Expr<'a>>),
     Gt(Box<Expr<'a>>, Box<Expr<'a>>),
     Eq(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -22,7 +23,13 @@ pub enum ExprKind<'a> {
     Lambda(&'a str, Box<Expr<'a>>),
     Call(Box<Expr<'a>>, Box<Expr<'a>>),
     Id(&'a str),
-    Lit(f64),
+    Lit(LiteralKind),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiteralKind {
+    Double(f64),
+    Bool(bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,23 +38,11 @@ pub struct Expr<'a> {
     kind: ExprKind<'a>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
     Num(f64),
     Bool(bool),
     Clos(&'a str, Rc<Env<'a>>, Rc<Expr<'a>>),
-}
-
-impl<'a> PartialEq for Value<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            Value::Num(l) => match other {
-                Value::Num(r) => l == r,
-                _ => false,
-            },
-            _ => false,
-        }
-    }
 }
 
 impl<'a> PartialOrd for Value<'a> {
@@ -121,7 +116,14 @@ impl<'a> ops::Mul<Value<'a>> for Value<'a> {
 
 pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
     match &e.kind {
-        ExprKind::Lit(x) => Value::Num(*x),
+        ExprKind::Lit(x) => match x {
+            LiteralKind::Double(d) => Value::Num(*d),
+            LiteralKind::Bool(b) => Value::Bool(*b),
+        },
+        ExprKind::Not(v) => Value::Bool(!match eval(v, env) {
+            Value::Bool(b) => b,
+            _ => panic!("not a bool"),
+        }),
         ExprKind::Lt(left, right) => Value::Bool(eval(left, env) < eval(right, env)),
         ExprKind::Gt(left, right) => Value::Bool(eval(left, env) > eval(right, env)),
         ExprKind::Eq(left, right) => Value::Bool(eval(left, env) == eval(right, env)),
@@ -295,7 +297,7 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
         SExp::Leaf(a) => match a.parse() {
             Ok(d) => Expr {
                 source: a,
-                kind: ExprKind::Lit(d),
+                kind: ExprKind::Lit(LiteralKind::Double(d)),
             },
             Err(_) => Expr {
                 source: a,
@@ -444,6 +446,30 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn not<'a>(l: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Not(Box::new(l)),
+        }
+    }
+    fn eq<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Eq(Box::new(l), Box::new(r)),
+        }
+    }
+    fn lt<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Lt(Box::new(l), Box::new(r)),
+        }
+    }
+    fn gt<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Gt(Box::new(l), Box::new(r)),
+        }
+    }
     fn add<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
         Expr {
             source: "",
@@ -468,10 +494,16 @@ mod tests {
             kind: ExprKind::Div(Box::new(l), Box::new(r)),
         }
     }
-    fn lit<'a>(x: f64) -> Expr<'a> {
+    fn double_v<'a>(x: f64) -> Expr<'a> {
         Expr {
             source: "",
-            kind: ExprKind::Lit(x),
+            kind: ExprKind::Lit(LiteralKind::Double(x)),
+        }
+    }
+    fn bool_v<'a>(x: bool) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Lit(LiteralKind::Bool(x)),
         }
     }
     fn id<'a>(x: &'a str) -> Expr<'a> {
@@ -496,7 +528,7 @@ mod tests {
     #[test]
     fn test_add() {
         assert_eq!(
-            eval(&add(lit(17.0), lit(3.2)), &HashMap::new()),
+            eval(&add(double_v(17.0), double_v(3.2)), &HashMap::new()),
             Value::Num(20.2)
         );
     }
@@ -504,7 +536,10 @@ mod tests {
     #[test]
     fn test_add_sub() {
         assert_eq!(
-            eval(&add(lit(17.0), sub(lit(7.5), lit(7.0))), &HashMap::new()),
+            eval(
+                &add(double_v(17.0), sub(double_v(7.5), double_v(7.0))),
+                &HashMap::new()
+            ),
             Value::Num(17.5)
         );
     }
@@ -526,11 +561,11 @@ mod tests {
 
     #[test]
     fn test_lambda() {
-        let func = lambda("x", add(lit(17.0), id("x")));
+        let func = lambda("x", add(double_v(17.0), id("x")));
         if let Value::Clos(arg, env, body) = eval(&func, &HashMap::new()) {
             assert_eq!(arg, "x");
             assert_eq!(*env, HashMap::new());
-            assert_eq!(*body, add(lit(17.0), id("x")));
+            assert_eq!(*body, add(double_v(17.0), id("x")));
         } else {
             panic!("didn't eval to closure")
         }
@@ -539,27 +574,71 @@ mod tests {
     #[test]
     fn test_math() {
         assert_eq!(
-            eval(&add(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&add(double_v(3.), double_v(5.)), &HashMap::new()),
             Value::Num(3. + 5.)
         );
         assert_eq!(
-            eval(&sub(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&sub(double_v(3.), double_v(5.)), &HashMap::new()),
             Value::Num(3. - 5.)
         );
         assert_eq!(
-            eval(&mul(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&mul(double_v(3.), double_v(5.)), &HashMap::new()),
             Value::Num(3. * 5.)
         );
         assert_eq!(
-            eval(&div(lit(3.), lit(5.)), &HashMap::new()),
+            eval(&div(double_v(3.), double_v(5.)), &HashMap::new()),
             Value::Num(3. / 5.)
         );
     }
 
     #[test]
+    fn test_logic() {
+        assert_eq!(
+            eval(&eq(double_v(3.), double_v(5.)), &HashMap::new()),
+            Value::Bool(false),
+            "(= 3 5)"
+        );
+        assert_eq!(
+            eval(&eq(double_v(3.), double_v(3.)), &HashMap::new()),
+            Value::Bool(true),
+            "(= 3 3)"
+        );
+        assert_eq!(
+            eval(&lt(double_v(3.), double_v(5.)), &HashMap::new()),
+            Value::Bool(true),
+            "(< 3 5)"
+        );
+        assert_eq!(
+            eval(&lt(double_v(5.), double_v(3.)), &HashMap::new()),
+            Value::Bool(false),
+            "(< 5 3)"
+        );
+        assert_eq!(
+            eval(&gt(double_v(3.), double_v(5.)), &HashMap::new()),
+            Value::Bool(false),
+            "(> 3 5)"
+        );
+        assert_eq!(
+            eval(&gt(double_v(5.), double_v(3.)), &HashMap::new()),
+            Value::Bool(true),
+            "(> 5 3)"
+        );
+        assert_eq!(
+            eval(&not(bool_v(false)), &HashMap::new()),
+            Value::Bool(true),
+            "(! false)"
+        );
+        assert_eq!(
+            eval(&not(bool_v(true)), &HashMap::new()),
+            Value::Bool(false),
+            "(! true)"
+        );
+    }
+
+    #[test]
     fn test_lambda_call() {
-        let func = lambda("x", add(lit(17.0), id("x")));
-        let arg = lit(11.0);
+        let func = lambda("x", add(double_v(17.0), id("x")));
+        let arg = double_v(11.0);
 
         assert_eq!(eval(&call(func, arg), &HashMap::new()), Value::Num(28.0))
     }
@@ -658,11 +737,11 @@ mod tests {
                 kind: ExprKind::Add(
                     Box::new(Expr {
                         source: "1",
-                        kind: ExprKind::Lit(1.0)
+                        kind: ExprKind::Lit(LiteralKind::Double(1.0))
                     }),
                     Box::new(Expr {
                         source: "1",
-                        kind: ExprKind::Lit(1.0)
+                        kind: ExprKind::Lit(LiteralKind::Double(1.0))
                     })
                 )
             }
@@ -682,7 +761,7 @@ mod tests {
                         kind: ExprKind::Add(
                             Box::new(Expr {
                                 source: "1",
-                                kind: ExprKind::Lit(1.0)
+                                kind: ExprKind::Lit(LiteralKind::Double(1.0))
                             }),
                             Box::new(Expr {
                                 source: "x",
@@ -720,7 +799,7 @@ mod tests {
             parse("1"),
             Expr {
                 source: "1",
-                kind: ExprKind::Lit(1.0)
+                kind: ExprKind::Lit(LiteralKind::Double(1.0))
             }
         )
     }
@@ -785,7 +864,7 @@ mod tests {
                     (+ x (f (- x 1))))))",
         );
 
-        let call_with_3 = call(call(y, sum), lit(3.0));
+        let call_with_3 = call(call(y, sum), double_v(3.0));
 
         assert_eq!(eval(&call_with_3, &HashMap::new()), Value::Num(6.0));
     }
