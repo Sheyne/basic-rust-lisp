@@ -2,6 +2,7 @@ use im::hashmap::HashMap;
 use std::ops;
 use std::rc::Rc;
 use std::str::CharIndices;
+use std::cmp::Ordering;
 
 #[macro_use]
 extern crate lazy_static;
@@ -10,11 +11,14 @@ type Env<'a> = HashMap<&'a str, Value<'a>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind<'a> {
+    Lt(Box<Expr<'a>>, Box<Expr<'a>>),
+    Gt(Box<Expr<'a>>, Box<Expr<'a>>),
+    Eq(Box<Expr<'a>>, Box<Expr<'a>>),
     Add(Box<Expr<'a>>, Box<Expr<'a>>),
     Sub(Box<Expr<'a>>, Box<Expr<'a>>),
     Mul(Box<Expr<'a>>, Box<Expr<'a>>),
     Div(Box<Expr<'a>>, Box<Expr<'a>>),
-    If0(Box<Expr<'a>>, Box<Expr<'a>>, Box<Expr<'a>>),
+    If(Box<Expr<'a>>, Box<Expr<'a>>, Box<Expr<'a>>),
     Lambda(&'a str, Box<Expr<'a>>),
     Call(Box<Expr<'a>>, Box<Expr<'a>>),
     Id(&'a str),
@@ -30,6 +34,7 @@ pub struct Expr<'a> {
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
     Num(f64),
+    Bool(bool),
     Clos(&'a str, Rc<Env<'a>>, Rc<Expr<'a>>),
 }
 
@@ -41,6 +46,22 @@ impl<'a> PartialEq for Value<'a> {
                 _ => false,
             },
             _ => false,
+        }
+    }
+}
+
+impl<'a> PartialOrd for Value<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self {
+            Value::Num(l) => match other {
+                Value::Num(r) => l.partial_cmp(r),
+                _ => None,
+            },
+            Value::Bool(l) => match other {
+                Value::Bool(r) => l.partial_cmp(r),
+                _ => None,
+            },
+            _ => None,
         }
     }
 }
@@ -101,19 +122,22 @@ impl<'a> ops::Mul<Value<'a>> for Value<'a> {
 pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
     match &e.kind {
         ExprKind::Lit(x) => Value::Num(*x),
+        ExprKind::Lt(left, right) => Value::Bool(eval(left, env) < eval(right, env)),
+        ExprKind::Gt(left, right) => Value::Bool(eval(left, env) > eval(right, env)),
+        ExprKind::Eq(left, right) => Value::Bool(eval(left, env) == eval(right, env)),
         ExprKind::Add(left, right) => eval(left, env) + eval(right, env),
         ExprKind::Sub(left, right) => eval(left, env) - eval(right, env),
         ExprKind::Mul(left, right) => eval(left, env) * eval(right, env),
         ExprKind::Div(left, right) => eval(left, env) / eval(right, env),
-        ExprKind::If0(cond, t, f) => {
-            if let Value::Num(n) = eval(cond, env) {
-                if n == 0.0 {
+        ExprKind::If(cond, t, f) => {
+            if let Value::Bool(b) = eval(cond, env) {
+                if b {
                     eval(t, env)
                 } else {
                     eval(f, env)
                 }
             } else {
-                panic!("")
+                panic!("not a boolean")
             }
         }
         ExprKind::Id(id) => get_id(id, &env),
@@ -307,9 +331,30 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                     Box::new(sexp_to_expr(&elements[2])),
                 ),
             },
-            SExp::Leaf("if0") => Expr {
+            SExp::Leaf("=") => Expr {
                 source: source,
-                kind: ExprKind::If0(
+                kind: ExprKind::Eq(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf("<") => Expr {
+                source: source,
+                kind: ExprKind::Lt(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf(">") => Expr {
+                source: source,
+                kind: ExprKind::Gt(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
+            SExp::Leaf("if") => Expr {
+                source: source,
+                kind: ExprKind::If(
                     Box::new(sexp_to_expr(&elements[1])),
                     Box::new(sexp_to_expr(&elements[2])),
                     Box::new(sexp_to_expr(&elements[3])),
@@ -718,9 +763,9 @@ mod tests {
     }
 
     #[test]
-    fn test_if_0() {
-        assert!(eval(&parse("(if0 0 1 2)"), &HashMap::new()) == Value::Num(1.));
-        assert!(eval(&parse("(if0 1 1 2)"), &HashMap::new()) == Value::Num(2.));
+    fn test_if() {
+        assert!(eval(&parse("(if (< 0 1) 1 2)"), &HashMap::new()) == Value::Num(1.));
+        assert!(eval(&parse("(if (< 1 0) 1 2)"), &HashMap::new()) == Value::Num(2.));
     }
 
     #[test]
@@ -735,7 +780,7 @@ mod tests {
 
         let sum = parse(
             "(lambda f (lambda x 
-                (if0 x 
+                (if (= x 0) 
                     0
                     (+ x (f (- x 1))))))",
         );
@@ -772,7 +817,7 @@ mod tests {
     fn test_letrec() {
         let sum = parse(
             "(letrec f (lambda x 
-                (if0 x 
+                (if (= x 0) 
                     0
                     (+ x (f (- x 1))))) (f 5))",
         );
