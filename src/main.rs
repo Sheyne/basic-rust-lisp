@@ -19,16 +19,18 @@ pub enum ExprKind<'a> {
     Sub(Box<Expr<'a>>, Box<Expr<'a>>),
     Mul(Box<Expr<'a>>, Box<Expr<'a>>),
     Div(Box<Expr<'a>>, Box<Expr<'a>>),
+    Concat(Box<Expr<'a>>, Box<Expr<'a>>),
     If(Box<Expr<'a>>, Box<Expr<'a>>, Box<Expr<'a>>),
     Lambda(&'a str, Box<Expr<'a>>),
     Call(Box<Expr<'a>>, Box<Expr<'a>>),
     Id(&'a str),
-    Lit(LiteralKind),
+    Lit(LiteralKind<'a>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum LiteralKind {
+pub enum LiteralKind<'a> {
     Double(f64),
+    String(&'a str),
     Bool(bool),
 }
 
@@ -42,6 +44,7 @@ pub struct Expr<'a> {
 pub enum Value<'a> {
     Num(f64),
     Bool(bool),
+    String(String),
     Clos(&'a str, Rc<Env<'a>>, Rc<Expr<'a>>),
 }
 
@@ -54,6 +57,10 @@ impl<'a> PartialOrd for Value<'a> {
             },
             Value::Bool(l) => match other {
                 Value::Bool(r) => l.partial_cmp(r),
+                _ => None,
+            },
+            Value::String(l) => match other {
+                Value::String(r) => l.partial_cmp(r),
                 _ => None,
             },
             _ => None,
@@ -119,6 +126,7 @@ pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
         ExprKind::Lit(x) => match x {
             LiteralKind::Double(d) => Value::Num(*d),
             LiteralKind::Bool(b) => Value::Bool(*b),
+            LiteralKind::String(b) => Value::String(String::from(*b)),
         },
         ExprKind::Not(v) => Value::Bool(!match eval(v, env) {
             Value::Bool(b) => b,
@@ -131,6 +139,13 @@ pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
         ExprKind::Sub(left, right) => eval(left, env) - eval(right, env),
         ExprKind::Mul(left, right) => eval(left, env) * eval(right, env),
         ExprKind::Div(left, right) => eval(left, env) / eval(right, env),
+        ExprKind::Concat(left, right) => match eval(left, env) {
+            Value::String(l) => match eval(right, env) {
+                Value::String(r) => Value::String(format!("{}{}", l, r)),
+                _ => panic!("not a string"),
+            },
+            _ => panic!("not a string"),
+        },
         ExprKind::If(cond, t, f) => {
             if let Value::Bool(b) = eval(cond, env) {
                 if b {
@@ -494,6 +509,13 @@ mod tests {
             kind: ExprKind::Div(Box::new(l), Box::new(r)),
         }
     }
+    fn concat<'a>(l: Expr<'a>, r: Expr<'a>) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Concat(Box::new(l), Box::new(r)),
+        }
+    }
+
     fn double_v<'a>(x: f64) -> Expr<'a> {
         Expr {
             source: "",
@@ -504,6 +526,12 @@ mod tests {
         Expr {
             source: "",
             kind: ExprKind::Lit(LiteralKind::Bool(x)),
+        }
+    }
+    fn string_v<'a>(x: &'a str) -> Expr<'a> {
+        Expr {
+            source: "",
+            kind: ExprKind::Lit(LiteralKind::String(x)),
         }
     }
     fn id<'a>(x: &'a str) -> Expr<'a> {
@@ -541,6 +569,29 @@ mod tests {
                 &HashMap::new()
             ),
             Value::Num(17.5)
+        );
+    }
+
+    #[test]
+    fn test_concat() {
+        assert_eq!(
+            eval(
+                &concat(string_v("1"), string_v("2")),
+                &HashMap::new()
+            ),
+            Value::String("12".to_string())
+        );
+    }
+
+    #[test]
+    fn test_compare_str() {
+        assert_eq!(
+            eval(&eq(string_v("x"), string_v("x")), &HashMap::new()),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval(&eq(string_v("x"), string_v("y")), &HashMap::new()),
+            Value::Bool(false)
         );
     }
 
