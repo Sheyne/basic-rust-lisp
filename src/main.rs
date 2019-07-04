@@ -65,14 +65,14 @@ impl<'a> ops::Sub<Value<'a>> for Value<'a> {
 fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
     match e {
         Expr::Lit(x) => Value::Num(*x),
-        Expr::Add(left, right) => eval(&*left, env) + eval(&*right, env),
-        Expr::Sub(left, right) => eval(&*left, env) - eval(&*right, env),
-        Expr::Let(id, value, expr) => eval(&*expr, &add_to_env(id, eval(&*value, env), env)),
+        Expr::Add(left, right) => eval(left, env) + eval(right, env),
+        Expr::Sub(left, right) => eval(left, env) - eval(right, env),
+        Expr::Let(id, value, expr) => eval(expr, &add_to_env(id, eval(value, env), env)),
         Expr::Id(id) => get_id(id, &env),
         Expr::Clos(id, expr) => Value::Clos(id, Rc::new(*expr.clone())),
         Expr::Call(func, arg) => {
-            let argv = eval(&*arg, env);
-            if let Value::Clos(argn, body) = eval(&*func, env) {
+            let argv = eval(arg, env);
+            if let Value::Clos(argn, body) = eval(func, env) {
                 eval(&body, &add_to_env(argn, argv, env))
             } else {
                 panic!("cannot call non-closure")
