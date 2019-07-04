@@ -10,7 +10,7 @@ enum Expr<'a> {
     Add(Box<Expr<'a>>, Box<Expr<'a>>),
     Sub(Box<Expr<'a>>, Box<Expr<'a>>),
     Let(&'a str, Box<Expr<'a>>, Box<Expr<'a>>),
-    Clos(&'a str, Box<Expr<'a>>),
+    Lambda(&'a str, Box<Expr<'a>>),
     Call(Box<Expr<'a>>, Box<Expr<'a>>),
     Id(&'a str),
     Lit(f64),
@@ -69,7 +69,7 @@ fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
         Expr::Sub(left, right) => eval(left, env) - eval(right, env),
         Expr::Let(id, value, expr) => eval(expr, &add_to_env(id, eval(value, env), env)),
         Expr::Id(id) => get_id(id, &env),
-        Expr::Clos(id, expr) => Value::Clos(id, Rc::new(*expr.clone())),
+        Expr::Lambda(id, expr) => Value::Clos(id, Rc::new(*expr.clone())),
         Expr::Call(func, arg) => {
             let argv = eval(arg, env);
             if let Value::Clos(argn, body) = eval(func, env) {
@@ -236,7 +236,7 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                 Box::new(sexp_to_expr(&elements[2])),
                 Box::new(sexp_to_expr(&elements[3])),
             ),
-            SExp::Leaf("lambda") => Expr::Clos(
+            SExp::Leaf("lambda") => Expr::Lambda(
                 match &elements[1] {
                     SExp::Leaf(x) => x,
                     _ => panic!("not a name to bind"),
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_lambda() {
-        let func = Expr::Clos("x", Box::new(Expr::Add(lit(17.0), Box::new(Expr::Id("x")))));
+        let func = Expr::Lambda("x", Box::new(Expr::Add(lit(17.0), Box::new(Expr::Id("x")))));
         if let Value::Clos(arg, body) = eval(&func, &HashMap::new()) {
             assert_eq!(arg, "x");
             assert_eq!(*body, Expr::Add(lit(17.0), Box::new(Expr::Id("x"))));
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn test_lambda_call() {
-        let func = Box::new(Expr::Clos(
+        let func = Box::new(Expr::Lambda(
             "x",
             Box::new(Expr::Add(lit(17.0), Box::new(Expr::Id("x")))),
         ));
@@ -419,7 +419,7 @@ mod tests {
     fn test_parse_clos() {
         assert_eq!(
             parse("(lambda x (+ 1 x))"),
-            Expr::Clos("x", Box::new(parse("(+ 1 x)")))
+            Expr::Lambda("x", Box::new(parse("(+ 1 x)")))
         )
     }
     #[test]
