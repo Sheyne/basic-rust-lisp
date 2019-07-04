@@ -12,6 +12,8 @@ type Env<'a> = HashMap<&'a str, Value<'a>>;
 pub enum Expr<'a> {
     Add(Box<Expr<'a>>, Box<Expr<'a>>),
     Sub(Box<Expr<'a>>, Box<Expr<'a>>),
+    Mul(Box<Expr<'a>>, Box<Expr<'a>>),
+    Div(Box<Expr<'a>>, Box<Expr<'a>>),
     If0(Box<Expr<'a>>, Box<Expr<'a>>, Box<Expr<'a>>),
     Lambda(&'a str, Box<Expr<'a>>),
     Call(Box<Expr<'a>>, Box<Expr<'a>>),
@@ -64,12 +66,40 @@ impl<'a> ops::Sub<Value<'a>> for Value<'a> {
         }
     }
 }
+impl<'a> ops::Div<Value<'a>> for Value<'a> {
+    type Output = Self;
+
+    fn div(self, rhs: Value) -> Value {
+        match self {
+            Value::Num(l) => match rhs {
+                Value::Num(r) => Value::Num(l / r),
+                _ => panic!("can only sub nums"),
+            },
+            _ => panic!("can only sub nums"),
+        }
+    }
+}
+impl<'a> ops::Mul<Value<'a>> for Value<'a> {
+    type Output = Self;
+
+    fn mul(self, rhs: Value) -> Value {
+        match self {
+            Value::Num(l) => match rhs {
+                Value::Num(r) => Value::Num(l * r),
+                _ => panic!("can only sub nums"),
+            },
+            _ => panic!("can only sub nums"),
+        }
+    }
+}
 
 pub fn eval<'a, 'b>(e: &Expr<'a>, env: &'b Env<'a>) -> Value<'a> {
     match e {
         Expr::Lit(x) => Value::Num(*x),
         Expr::Add(left, right) => eval(left, env) + eval(right, env),
         Expr::Sub(left, right) => eval(left, env) - eval(right, env),
+        Expr::Mul(left, right) => eval(left, env) * eval(right, env),
+        Expr::Div(left, right) => eval(left, env) / eval(right, env),
         Expr::If0(cond, t, f) => {
             if let Value::Num(n) = eval(cond, env) {
                 if n == 0.0 {
@@ -237,6 +267,14 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                 Box::new(sexp_to_expr(&elements[1])),
                 Box::new(sexp_to_expr(&elements[2])),
             ),
+            SExp::Leaf("*") => Expr::Mul(
+                Box::new(sexp_to_expr(&elements[1])),
+                Box::new(sexp_to_expr(&elements[2])),
+            ),
+            SExp::Leaf("/") => Expr::Div(
+                Box::new(sexp_to_expr(&elements[1])),
+                Box::new(sexp_to_expr(&elements[2])),
+            ),
             SExp::Leaf("if0") => Expr::If0(
                 Box::new(sexp_to_expr(&elements[1])),
                 Box::new(sexp_to_expr(&elements[2])),
@@ -349,6 +387,14 @@ mod tests {
         } else {
             panic!("didn't eval to closure")
         }
+    }
+
+    #[test]
+    fn test_math() {
+        assert_eq!(eval(&Expr::Add(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. + 5.));
+        assert_eq!(eval(&Expr::Sub(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. - 5.));
+        assert_eq!(eval(&Expr::Mul(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. * 5.));
+        assert_eq!(eval(&Expr::Div(lit(3.), lit(5.)), &HashMap::new()), Value::Num(3. / 5.));
     }
 
     #[test]
