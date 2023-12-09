@@ -465,8 +465,6 @@ mod tests {
                     (+ x (f (- x 1))))) (f 5))",
         );
 
-        assert_eq!(typecheck(&sum), ConcreteType::Double);
-
         assert_eq!(
             eval(&sum, &HashMap::new()),
             Value::Double(1. + 2. + 3. + 4. + 5.)

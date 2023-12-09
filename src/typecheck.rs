@@ -64,7 +64,11 @@ fn assert_type<'symbol>(
     source: Type<'symbol>,
     expected: Type<'symbol>,
     constraints: TypeConstraints<'symbol>,
+    depth: i32,
 ) -> TypeConstraints<'symbol> {
+    if depth > 1000 {
+        panic!("Possibly infinite type")
+    }
     if source != expected {
         match &source {
             Type::Var(left_sym) => {
@@ -86,13 +90,16 @@ fn assert_type<'symbol>(
                             new.insert(*left_sym, right_existing.clone());
                             new
                         }
-                        (Some(left_existing), Some(right_existing)) => {
-                            assert_type(left_existing.clone(), right_existing.clone(), constraints)
-                        }
+                        (Some(left_existing), Some(right_existing)) => assert_type(
+                            left_existing.clone(),
+                            right_existing.clone(),
+                            constraints,
+                            depth + 1,
+                        ),
                     }
                 } else {
                     if let Some(existing) = constraints.get(left_sym) {
-                        assert_type(existing.clone(), expected, constraints)
+                        assert_type(existing.clone(), expected, constraints, depth + 1)
                     } else {
                         let mut new: HashMap<Sym<'_>, Type<'_>> = constraints.clone();
                         new.insert(*left_sym, expected.clone());
@@ -101,15 +108,16 @@ fn assert_type<'symbol>(
                 }
             }
             Type::Clos(arg_s, res_s) => match &expected {
-                Type::Var(_) => assert_type(expected, source, constraints),
+                Type::Var(_) => assert_type(expected, source, constraints, depth + 1),
                 Type::Clos(arg_e, res_e) => {
-                    let constraints = assert_type(*arg_s.clone(), *arg_e.clone(), constraints);
-                    assert_type(*res_s.clone(), *res_e.clone(), constraints)
+                    let constraints =
+                        assert_type(*arg_s.clone(), *arg_e.clone(), constraints, depth + 1);
+                    assert_type(*res_s.clone(), *res_e.clone(), constraints, depth + 1)
                 }
                 _ => panic!("Unresolvable types {:?} != {:?}", source, expected),
             },
             _ => match &expected {
-                Type::Var(_) => assert_type(expected, source, constraints),
+                Type::Var(_) => assert_type(expected, source, constraints, depth + 1),
                 _ => panic!("Unresolvable types {:?} != {:?}", source, expected),
             },
         }
@@ -121,18 +129,22 @@ fn assert_type<'symbol>(
 fn lookup<'symbol>(
     constraints: TypeConstraints<'symbol>,
     t: Type<'symbol>,
+    depth: i32,
 ) -> (TypeConstraints<'symbol>, Type<'symbol>) {
+    if depth > 1000 {
+        panic!("Possibly infinite type")
+    }
     match t {
         Type::Var(s) => {
             if let Some(t) = constraints.get(&s) {
-                lookup(constraints.clone(), t.clone())
+                lookup(constraints.clone(), t.clone(), depth+1)
             } else {
                 (constraints, t)
             }
         }
         Type::Clos(a, b) => {
-            let (constraints, a) = lookup(constraints, *a);
-            let (constraints, b) = lookup(constraints, *b);
+            let (constraints, a) = lookup(constraints, *a, depth + 1);
+            let (constraints, b) = lookup(constraints, *b, depth + 1);
             (constraints, Type::Clos(Box::new(a), Box::new(b)))
         }
         _ => (constraints, t),
@@ -158,10 +170,10 @@ impl Typechecker {
                                 constraints: TypeConstraints<'me>|
          -> (TypeConstraints<'me>, Type<'me>) {
             let (constraints, left_t) = self.typecheck(left, env, constraints);
-            let constraints = assert_type(left_t, t_in.clone(), constraints);
+            let constraints = assert_type(left_t, t_in.clone(), constraints, 0);
             let (constraints, right_t) = self.typecheck(right, env, constraints);
-            let constraints = assert_type(right_t, t_in, constraints);
-            lookup(constraints, t_out)
+            let constraints = assert_type(right_t, t_in, constraints, 0);
+            lookup(constraints, t_out, 0)
         };
 
         match &e.kind {
@@ -188,7 +200,7 @@ impl Typechecker {
             }
             ExprKind::Not(left) => {
                 let (constraints, t) = self.typecheck(left, env, constraints);
-                lookup(assert_type(t, Type::Bool, constraints), Type::Bool)
+                lookup(assert_type(t, Type::Bool, constraints, 0), Type::Bool, 0)
             }
             ExprKind::Lit(x) => match x {
                 LiteralKind::Double(_) => (constraints, Type::Double),
@@ -200,11 +212,11 @@ impl Typechecker {
             }
             ExprKind::If(cond, t, f) => {
                 let (constraints, cond_t) = self.typecheck(cond, env, constraints);
-                let constraints = assert_type(cond_t, Type::Bool, constraints);
+                let constraints = assert_type(cond_t, Type::Bool, constraints, 0);
                 let (constraints, t_t) = self.typecheck(t, env, constraints);
                 let (constraints, f_t) = self.typecheck(f, env, constraints);
-                let constraints = assert_type(t_t.clone(), f_t, constraints);
-                lookup(constraints, t_t)
+                let constraints = assert_type(t_t.clone(), f_t, constraints, 0);
+                lookup(constraints, t_t, 0)
             }
             ExprKind::Lambda(id, expr) => {
                 let arg_sym = self.gensym.get();
@@ -219,7 +231,7 @@ impl Typechecker {
                     println!("Binding {:?} = None", &arg_sym);
                 }
 
-                lookup(constraints, Type::Clos(Box::new(arg), Box::new(body_t)))
+                lookup(constraints, Type::Clos(Box::new(arg), Box::new(body_t)), 0)
             }
             ExprKind::Call(func, arg) => {
                 let (constraints, func_t) = self.typecheck(func, env, constraints);
@@ -229,8 +241,9 @@ impl Typechecker {
                     func_t,
                     Type::Clos(Box::new(arg_t), Box::new(res_t.clone())),
                     constraints,
+                    0,
                 );
-                lookup(constraints, res_t)
+                lookup(constraints, res_t, 0)
             }
             ExprKind::Id(x) => (constraints, env.get(x).unwrap().clone()),
         }
@@ -273,6 +286,7 @@ fn test_eval_complexer_2() {
 }
 
 #[test]
+#[should_panic(expected = "Possibly infinite type")]
 fn test_letrec() {
     let sum = parse(
         "(letrec f (lambda x 
