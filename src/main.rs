@@ -281,8 +281,7 @@ pub fn typecheck<'a, 'b>(
             );
             lookup(constraints, res_t)
         }
-        ExprKind::Id(x) => {
-            (constraints, env.get(x).unwrap().clone())}
+        ExprKind::Id(x) => (constraints, env.get(x).unwrap().clone()),
     }
 }
 
@@ -803,13 +802,14 @@ mod tests {
     #[test]
     fn test_lambda() {
         let func = lambda("x", add(double_v(17.0), id("x")));
-        if let Value::Clos(arg, env, body) = eval(&func, &HashMap::new()) {
-            assert_eq!(arg, "x");
-            assert_eq!(*env, HashMap::new());
-            assert_eq!(*body, add(double_v(17.0), id("x")));
-        } else {
-            panic!("didn't eval to closure")
-        }
+        assert_eq!(
+            Value::Clos(
+                "x",
+                Default::default(),
+                Rc::new(add(double_v(17.0), id("x")))
+            ),
+            eval(&func, &HashMap::new())
+        );
     }
 
     #[test]
