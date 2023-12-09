@@ -5,7 +5,7 @@ use std::ops;
 use std::rc::Rc;
 use typecheck::typecheck;
 #[cfg(test)]
-use typecheck::Type;
+use typecheck::ConcreteType;
 
 mod parse;
 mod sexp;
@@ -160,7 +160,7 @@ fn get_id<'a, 'b>(id: &str, env: &'b Env<'a>) -> Value<'a> {
 fn main() {
     let y = parse("(letrec f 1 2)");
 
-    typecheck(&y, &Default::default(), Default::default());
+    typecheck(&y);
 
     println!("{:?}", y);
 }
@@ -405,10 +405,7 @@ mod tests {
     fn test_eval_simple() {
         let prog = parse("(+ 1 1)");
 
-        assert_eq!(
-            typecheck(&prog, &HashMap::new(), HashMap::new()),
-            (HashMap::new(), Type::Double)
-        );
+        assert_eq!(typecheck(&prog), ConcreteType::Double);
 
         assert_eq!(eval(&prog, &HashMap::new()), (Value::Double(2.)))
     }
@@ -417,10 +414,7 @@ mod tests {
     fn test_eval_complex() {
         let prog = parse("(let x (lambda x (+ x 1)) (x 4))");
 
-        assert_eq!(
-            typecheck(&prog, &HashMap::new(), HashMap::new()),
-            (HashMap::new(), Type::Double)
-        );
+        assert_eq!(typecheck(&prog), ConcreteType::Double);
 
         assert_eq!(eval(&prog, &HashMap::new()), Value::Double(5.))
     }
@@ -429,10 +423,7 @@ mod tests {
     fn test_eval_complexer() {
         let prog = parse("((lambda x (+ x 1)) 3)");
 
-        assert_eq!(
-            typecheck(&prog, &HashMap::new(), HashMap::new()),
-            (HashMap::new(), Type::Double)
-        );
+        assert_eq!(typecheck(&prog), ConcreteType::Double);
 
         assert_eq!(eval(&prog, &HashMap::new()), (Value::Double(4.)))
     }
@@ -474,10 +465,7 @@ mod tests {
                     (+ x (f (- x 1))))) (f 5))",
         );
 
-        assert_eq!(
-            typecheck(&sum, &HashMap::new(), HashMap::new()),
-            (HashMap::new(), Type::Double)
-        );
+        assert_eq!(typecheck(&sum), ConcreteType::Double);
 
         assert_eq!(
             eval(&sum, &HashMap::new()),

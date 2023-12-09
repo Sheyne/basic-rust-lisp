@@ -3,42 +3,102 @@ use crate::parse::parse;
 use crate::parse::{Expr, ExprKind, LiteralKind};
 use atomic_counter::{AtomicCounter, RelaxedCounter};
 use im::hashmap::HashMap;
-use std::sync::OnceLock;
+use std::{fmt::Debug, marker::PhantomData};
 
-pub type TEnv<'a> = HashMap<&'a str, Type>;
-pub type TypeConstraints = HashMap<Sym, Type>;
+type TEnv<'symbol, 'a> = HashMap<&'a str, Type<'symbol>>;
+type TypeConstraints<'symbol> = HashMap<Sym<'symbol>, Type<'symbol>>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Sym(usize);
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Sym<'a>(usize, PhantomData<&'a mut &'a usize>);
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Type {
-    Var(Sym),
-    Poly,
-    Double,
-    Bool,
-    String,
-    Clos(Box<Type>, Box<Type>),
-}
-
-impl Sym {
-    fn new() -> Sym {
-        static COUNTER: OnceLock<RelaxedCounter> = OnceLock::new();
-        Sym(COUNTER.get_or_init(|| RelaxedCounter::new(0)).inc())
+impl<'a> Debug for Sym<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Sym").field(&self.0).finish()
     }
 }
 
-fn assert_type(source: Type, expected: Type, constraints: TypeConstraints) -> TypeConstraints {
+#[derive(Default)]
+struct SymbolGenerator(RelaxedCounter);
+
+impl SymbolGenerator {
+    fn get(&self) -> Sym {
+        Sym(self.0.inc(), Default::default())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum Type<'a> {
+    Var(Sym<'a>),
+    Double,
+    Bool,
+    String,
+    Clos(Box<Type<'a>>, Box<Type<'a>>),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ConcreteType {
+    Double,
+    Bool,
+    String,
+    Clos(Box<ConcreteType>, Box<ConcreteType>),
+}
+
+impl<'a> TryFrom<Type<'a>> for ConcreteType {
+    type Error = ();
+
+    fn try_from(value: Type<'a>) -> Result<Self, Self::Error> {
+        match value {
+            Type::Var(_) => Err(()),
+            Type::Double => Ok(ConcreteType::Double),
+            Type::Bool => Ok(ConcreteType::Bool),
+            Type::String => Ok(ConcreteType::String),
+            Type::Clos(a, b) => Ok(ConcreteType::Clos(
+                Box::new(TryInto::<ConcreteType>::try_into(*a)?),
+                Box::new(TryInto::<ConcreteType>::try_into(*b)?),
+            )),
+        }
+    }
+}
+
+fn assert_type<'symbol>(
+    source: Type<'symbol>,
+    expected: Type<'symbol>,
+    constraints: TypeConstraints<'symbol>,
+) -> TypeConstraints<'symbol> {
     if source != expected {
         match &source {
-            Type::Var(s) => {
-                let mut new = constraints.clone();
-                if let Some(old) = new.get(s) {
-                    panic!("already has {:?}: {:?} -> {:?}", s, old, expected);
-                };
-
-                new.insert(*s, expected);
-                new
+            Type::Var(left_sym) => {
+                if let Type::Var(right_sym) = &expected {
+                    match (constraints.get(left_sym), constraints.get(right_sym)) {
+                        (None, None) => {
+                            let mut new: HashMap<Sym<'_>, Type<'_>> = constraints.clone();
+                            new.insert(*left_sym, expected.clone());
+                            new.insert(*right_sym, source.clone());
+                            new
+                        }
+                        (Some(left_existing), None) => {
+                            let mut new: HashMap<Sym<'_>, Type<'_>> = constraints.clone();
+                            new.insert(*right_sym, left_existing.clone());
+                            new
+                        }
+                        (None, Some(right_existing)) => {
+                            let mut new: HashMap<Sym<'_>, Type<'_>> = constraints.clone();
+                            new.insert(*left_sym, right_existing.clone());
+                            new
+                        }
+                        (Some(left_existing), Some(right_existing)) => {
+                            assert_type(left_existing.clone(), right_existing.clone(), constraints)
+                        }
+                    }
+                } else {
+                    if let Some(existing) = constraints.get(left_sym) {
+                        assert_type(existing.clone(), expected, constraints)
+                    } else {
+                        let mut new: HashMap<Sym<'_>, Type<'_>> = constraints.clone();
+                        new.insert(*left_sym, expected.clone());
+                        new
+                    }
+                }
             }
             Type::Clos(arg_s, res_s) => match &expected {
                 Type::Var(_) => assert_type(expected, source, constraints),
@@ -58,15 +118,17 @@ fn assert_type(source: Type, expected: Type, constraints: TypeConstraints) -> Ty
     }
 }
 
-fn lookup(constraints: TypeConstraints, t: Type) -> (TypeConstraints, Type) {
+fn lookup<'symbol>(
+    constraints: TypeConstraints<'symbol>,
+    t: Type<'symbol>,
+) -> (TypeConstraints<'symbol>, Type<'symbol>) {
     match t {
         Type::Var(s) => {
-            let t = if let Some(t) = constraints.get(&s) {
-                t.clone()
+            if let Some(t) = constraints.get(&s) {
+                lookup(constraints.clone(), t.clone())
             } else {
-                t
-            };
-            (constraints, t)
+                (constraints, t)
+            }
         }
         Type::Clos(a, b) => {
             let (constraints, a) = lookup(constraints, *a);
@@ -77,124 +139,137 @@ fn lookup(constraints: TypeConstraints, t: Type) -> (TypeConstraints, Type) {
     }
 }
 
-pub fn typecheck<'a, 'b>(
-    e: &Expr<'a>,
-    env: &'b TEnv<'a>,
-    constraints: TypeConstraints,
-) -> (TypeConstraints, Type) {
-    let constrain_binary = |left: &Expr<'a>,
-                            right: &Expr<'a>,
-                            t_in: Type,
-                            t_out: Type,
-                            constraints: TypeConstraints|
-     -> (TypeConstraints, Type) {
-        let (constraints, left_t) = typecheck(left, env, constraints);
-        let constraints = assert_type(left_t, t_in.clone(), constraints);
-        let (constraints, right_t) = typecheck(right, env, constraints);
-        let constraints = assert_type(right_t, t_in, constraints);
-        lookup(constraints, t_out)
-    };
+#[derive(Default)]
+struct Typechecker {
+    gensym: SymbolGenerator,
+}
 
-    match &e.kind {
-        ExprKind::Add(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Double, constraints)
-        }
-        ExprKind::Sub(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Double, constraints)
-        }
-        ExprKind::Mul(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Double, constraints)
-        }
-        ExprKind::Div(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Double, constraints)
-        }
-        ExprKind::Lt(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Bool, constraints)
-        }
-        ExprKind::Gt(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Bool, constraints)
-        }
-        ExprKind::Eq(left, right) => {
-            constrain_binary(left, right, Type::Double, Type::Bool, constraints)
-        }
-        ExprKind::Not(left) => {
-            let (constraints, t) = typecheck(left, env, constraints);
-            lookup(assert_type(t, Type::Bool, constraints), Type::Bool)
-        }
-        ExprKind::Lit(x) => match x {
-            LiteralKind::Double(_) => (constraints, Type::Double),
-            LiteralKind::Bool(_) => (constraints, Type::Bool),
-            LiteralKind::String(_) => (constraints, Type::String),
-        },
-        ExprKind::Concat(left, right) => {
-            constrain_binary(left, right, Type::String, Type::String, constraints)
-        }
-        ExprKind::If(cond, t, f) => {
-            let (constraints, cond_t) = typecheck(cond, env, constraints);
-            let constraints = assert_type(cond_t, Type::Bool, constraints);
-            let (constraints, t_t) = typecheck(t, env, constraints);
-            let (constraints, f_t) = typecheck(f, env, constraints);
-            let constraints = assert_type(t_t.clone(), f_t, constraints);
-            lookup(constraints, t_t)
-        }
-        ExprKind::Lambda(id, expr) => {
-            let arg_sym = Sym::new();
-            let arg = Type::Var(arg_sym);
-            let mut new_env = env.clone();
-            new_env.insert(id, arg.clone());
-            let (constraints, body_t) = typecheck(expr, &new_env, constraints);
+impl Typechecker {
+    fn typecheck<'me, 'a, 'b>(
+        &'me self,
+        e: &Expr<'a>,
+        env: &'b TEnv<'me, 'a>,
+        constraints: TypeConstraints<'me>,
+    ) -> (TypeConstraints<'me>, Type<'me>) {
+        let constrain_binary = |left: &Expr<'a>,
+                                right: &Expr<'a>,
+                                t_in: Type<'me>,
+                                t_out: Type<'me>,
+                                constraints: TypeConstraints<'me>|
+         -> (TypeConstraints<'me>, Type<'me>) {
+            let (constraints, left_t) = self.typecheck(left, env, constraints);
+            let constraints = assert_type(left_t, t_in.clone(), constraints);
+            let (constraints, right_t) = self.typecheck(right, env, constraints);
+            let constraints = assert_type(right_t, t_in, constraints);
+            lookup(constraints, t_out)
+        };
 
-            if let Some(x) = constraints.get(&arg_sym) {
-                println!("Binding {:?} = {:?}", &arg_sym, x);
-            } else {
-                println!("Binding {:?} = None", &arg_sym);
+        match &e.kind {
+            ExprKind::Add(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Double, constraints)
             }
+            ExprKind::Sub(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Double, constraints)
+            }
+            ExprKind::Mul(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Double, constraints)
+            }
+            ExprKind::Div(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Double, constraints)
+            }
+            ExprKind::Lt(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Bool, constraints)
+            }
+            ExprKind::Gt(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Bool, constraints)
+            }
+            ExprKind::Eq(left, right) => {
+                constrain_binary(left, right, Type::Double, Type::Bool, constraints)
+            }
+            ExprKind::Not(left) => {
+                let (constraints, t) = self.typecheck(left, env, constraints);
+                lookup(assert_type(t, Type::Bool, constraints), Type::Bool)
+            }
+            ExprKind::Lit(x) => match x {
+                LiteralKind::Double(_) => (constraints, Type::Double),
+                LiteralKind::Bool(_) => (constraints, Type::Bool),
+                LiteralKind::String(_) => (constraints, Type::String),
+            },
+            ExprKind::Concat(left, right) => {
+                constrain_binary(left, right, Type::String, Type::String, constraints)
+            }
+            ExprKind::If(cond, t, f) => {
+                let (constraints, cond_t) = self.typecheck(cond, env, constraints);
+                let constraints = assert_type(cond_t, Type::Bool, constraints);
+                let (constraints, t_t) = self.typecheck(t, env, constraints);
+                let (constraints, f_t) = self.typecheck(f, env, constraints);
+                let constraints = assert_type(t_t.clone(), f_t, constraints);
+                lookup(constraints, t_t)
+            }
+            ExprKind::Lambda(id, expr) => {
+                let arg_sym = self.gensym.get();
+                let arg = Type::Var(arg_sym);
+                let mut new_env = env.clone();
+                new_env.insert(id, arg.clone());
+                let (constraints, body_t) = self.typecheck(expr, &new_env, constraints);
 
-            lookup(constraints, Type::Clos(Box::new(arg), Box::new(body_t)))
+                if let Some(x) = constraints.get(&arg_sym) {
+                    println!("Binding {:?} = {:?}", &arg_sym, x);
+                } else {
+                    println!("Binding {:?} = None", &arg_sym);
+                }
+
+                lookup(constraints, Type::Clos(Box::new(arg), Box::new(body_t)))
+            }
+            ExprKind::Call(func, arg) => {
+                let (constraints, func_t) = self.typecheck(func, env, constraints);
+                let (constraints, arg_t) = self.typecheck(arg, env, constraints);
+                let res_t = Type::Var(self.gensym.get());
+                let constraints = assert_type(
+                    func_t,
+                    Type::Clos(Box::new(arg_t), Box::new(res_t.clone())),
+                    constraints,
+                );
+                lookup(constraints, res_t)
+            }
+            ExprKind::Id(x) => (constraints, env.get(x).unwrap().clone()),
         }
-        ExprKind::Call(func, arg) => {
-            let (constraints, func_t) = typecheck(func, env, constraints);
-            let (constraints, arg_t) = typecheck(arg, env, constraints);
-            let res_t = Type::Var(Sym::new());
-            let constraints = assert_type(
-                func_t,
-                Type::Clos(Box::new(arg_t), Box::new(res_t.clone())),
-                constraints,
-            );
-            lookup(constraints, res_t)
-        }
-        ExprKind::Id(x) => (constraints, env.get(x).unwrap().clone()),
     }
+}
+
+pub fn typecheck<'a, 'b>(e: &Expr<'a>) -> ConcreteType {
+    let checker = Typechecker::default();
+    let (_, typ) = checker.typecheck(e, &Default::default(), Default::default());
+
+    typ.try_into().unwrap()
 }
 
 #[test]
 fn test_eval_simple() {
     let prog = parse("(+ 1 1)");
 
-    assert_eq!(
-        typecheck(&prog, &HashMap::new(), HashMap::new()),
-        (HashMap::new(), Type::Double)
-    );
+    assert_eq!(typecheck(&prog), ConcreteType::Double);
 }
 
 #[test]
 fn test_eval_complex() {
     let prog = parse("(let x (lambda x (+ x 1)) (x 4))");
 
-    assert_eq!(
-        typecheck(&prog, &HashMap::new(), HashMap::new()),
-        (HashMap::new(), Type::Double)
-    );
+    assert_eq!(typecheck(&prog), ConcreteType::Double);
 }
 
 #[test]
 fn test_eval_complexer() {
     let prog = parse("((lambda x (+ x 1)) 3)");
 
-    assert_eq!(
-        typecheck(&prog, &HashMap::new(), HashMap::new()),
-        (HashMap::new(), Type::Double)
-    );
+    assert_eq!(typecheck(&prog), ConcreteType::Double);
+}
+
+#[test]
+fn test_eval_complexer_2() {
+    let prog = parse("(if (= 10 ((lambda x (+ x 1)) 3)) 7 1)");
+
+    assert_eq!(typecheck(&prog), ConcreteType::Double);
 }
 
 #[test]
@@ -206,8 +281,5 @@ fn test_letrec() {
                 (+ x (f (- x 1))))) (f 5))",
     );
 
-    assert_eq!(
-        typecheck(&sum, &HashMap::new(), HashMap::new()),
-        (HashMap::new(), Type::Double)
-    );
+    assert_eq!(typecheck(&sum), ConcreteType::Double);
 }
