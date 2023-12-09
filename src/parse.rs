@@ -128,7 +128,9 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
             },
             SExp::Leaf("letrec") => {
                 static Y: OnceLock<Expr<'static>> = OnceLock::new();
-                let y = Y.get_or_init(|| parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))"));
+                let y = Y.get_or_init(|| {
+                    parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))")
+                });
                 let n = match &elements[1] {
                     SExp::Leaf(x) => x,
                     _ => panic!("not a name to bind"),
