@@ -1,10 +1,10 @@
 use atomic_counter::{AtomicCounter, RelaxedCounter};
 use im::hashmap::HashMap;
-use lazy_static::lazy_static;
 use parse::{parse, Expr, ExprKind, LiteralKind};
 use std::cmp::Ordering;
 use std::ops;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 mod parse;
 mod sexp;
@@ -37,10 +37,8 @@ pub enum Type {
 
 impl Sym {
     fn new() -> Sym {
-        lazy_static! {
-            static ref C: RelaxedCounter = RelaxedCounter::new(0);
-        }
-        Sym(C.inc())
+        static COUNTER: OnceLock<RelaxedCounter> = OnceLock::new();
+        Sym(COUNTER.get_or_init(|| RelaxedCounter::new(0)).inc())
     }
 }
 

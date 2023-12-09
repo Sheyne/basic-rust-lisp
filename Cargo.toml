@@ -6,5 +6,4 @@ edition = "2021"
 
 [dependencies]
 im = "*"
-lazy_static = "*"
 atomic-counter = "*"

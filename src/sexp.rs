@@ -1,4 +1,6 @@
-use crate::tokenize::{tokenize, Token, TokenStream};
+#[cfg(test)]
+use crate::tokenize::tokenize;
+use crate::tokenize::{Token, TokenStream};
 
 #[derive(Debug, PartialEq)]
 pub enum SExp<'a> {

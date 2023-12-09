@@ -1,8 +1,9 @@
+use std::sync::OnceLock;
+
 use crate::{
     sexp::{parse_sexp, SExp},
     tokenize::tokenize,
 };
-use lazy_static::lazy_static;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind<'a> {
@@ -126,16 +127,14 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                 ),
             },
             SExp::Leaf("letrec") => {
-                lazy_static! {
-                    static ref Y: Expr<'static> =
-                        parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))");
-                }
+                static Y: OnceLock<Expr<'static>> = OnceLock::new();
+                let y = Y.get_or_init(|| parse("(lambda f ((lambda x (x x)) (lambda x (f (lambda y ((x x) y))))))"));
                 let n = match &elements[1] {
                     SExp::Leaf(x) => x,
                     _ => panic!("not a name to bind"),
                 };
                 let call_y = ExprKind::Call(
-                    Box::new(Y.clone()),
+                    Box::new(y.clone()),
                     Box::new(Expr {
                         source: source,
                         kind: ExprKind::Lambda(n, Box::new(sexp_to_expr(&elements[2]))),
