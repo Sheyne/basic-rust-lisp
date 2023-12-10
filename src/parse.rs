@@ -38,6 +38,14 @@ pub struct Expr<'a> {
 
 fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
     match sexp {
+        SExp::Leaf(source @ "true") => Expr {
+            source,
+            kind: ExprKind::Lit(LiteralKind::Bool(true)),
+        },
+        SExp::Leaf(source @ "false") => Expr {
+            source,
+            kind: ExprKind::Lit(LiteralKind::Bool(false)),
+        },
         SExp::Leaf(a) => match a.parse() {
             Ok(d) => Expr {
                 source: a,
@@ -59,6 +67,10 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
                     Box::new(sexp_to_expr(&elements[1])),
                     Box::new(sexp_to_expr(&elements[2])),
                 ),
+            },
+            SExp::Leaf("!") => Expr {
+                source: source,
+                kind: ExprKind::Not(Box::new(sexp_to_expr(&elements[1]))),
             },
             SExp::Leaf("+") => Expr {
                 source: source,
@@ -190,6 +202,30 @@ pub fn parse<'a>(program: &'a str) -> Expr<'a> {
     let exp = parse_sexp(&mut tokens);
     sexp_to_expr(&exp)
 }
+
+#[test]
+fn test_parse_true() {
+    let raw = r#"  true"#;
+    assert_eq!(
+        parse(raw),
+        Expr {
+            source: r#"true"#,
+            kind: ExprKind::Lit(LiteralKind::Bool(true))
+        }
+    );
+}
+
+#[test]
+fn test_parse_false() {
+    assert_eq!(
+        parse(r#"  false"#),
+        Expr {
+            source: r#"false"#,
+            kind: ExprKind::Lit(LiteralKind::Bool(false))
+        }
+    );
+}
+
 
 #[test]
 fn test_parse_string() {
