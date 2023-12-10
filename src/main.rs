@@ -16,7 +16,7 @@ fn main() {
     let prog = String::from_utf8(buf).unwrap();
     let y = parse(&prog);
 
-    typecheck(&y);
+    typecheck(&y).unwrap();
 
     println!("{:?}", eval(&y, &Default::default()));
 }
