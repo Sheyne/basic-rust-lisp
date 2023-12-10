@@ -10,7 +10,11 @@ type TypeConstraints<'expr, 'symbol> = HashMap<Sym<'symbol>, Type<'expr, 'symbol
 
 #[derive(Debug, PartialEq)]
 pub enum TypeError<'a> {
-    UnresolvableTypes(Expr<'a>, ConcreteType),
+    UnresolvableTypes {
+        expr: Expr<'a>,
+        actual: ConcreteType,
+        expected: ConcreteType,
+    },
     InfiniteType,
 }
 
@@ -144,11 +148,19 @@ fn assert_type<'symbol, 'expr>(
                         assert_type(*arg_s.clone(), *arg_e.clone(), constraints, depth + 1)?;
                     assert_type(*res_s.clone(), *res_e.clone(), constraints, depth + 1)?
                 }
-                _ => Err(TypeError::UnresolvableTypes(source.expr.clone(), expected.typ.try_into().unwrap()))?,
+                _ => Err(TypeError::UnresolvableTypes {
+                    expr: source.expr.clone(),
+                    expected: expected.typ.try_into().unwrap(),
+                    actual: source.typ.try_into().unwrap(),
+                })?,
             },
             _ => match &expected.typ {
                 TypeOption::Var(_) => assert_type(expected, source, constraints, depth + 1)?,
-                _ => Err(TypeError::UnresolvableTypes(source.expr.clone(), expected.typ.try_into().unwrap()))?,
+                _ => Err(TypeError::UnresolvableTypes {
+                    expr: source.expr.clone(),
+                    expected: expected.typ.try_into().unwrap(),
+                    actual: source.typ.try_into().unwrap(),
+                })?,
             },
         }
     } else {
