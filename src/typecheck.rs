@@ -137,7 +137,7 @@ fn lookup<'symbol>(
     match t {
         Type::Var(s) => {
             if let Some(t) = constraints.get(&s) {
-                lookup(constraints.clone(), t.clone(), depth+1)
+                lookup(constraints.clone(), t.clone(), depth + 1)
             } else {
                 (constraints, t)
             }

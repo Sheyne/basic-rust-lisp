@@ -50,9 +50,16 @@ fn sexp_to_expr<'a>(sexp: &SExp<'a>) -> Expr<'a> {
         },
         SExp::StringLeaf(s) => Expr {
             source: s,
-            kind: ExprKind::Lit(LiteralKind::String(s)),
+            kind: ExprKind::Lit(LiteralKind::String(&s[1..s.len() - 1])),
         },
         SExp::Branch(source, elements) => match &elements[0] {
+            SExp::Leaf("concat") => Expr {
+                source: source,
+                kind: ExprKind::Concat(
+                    Box::new(sexp_to_expr(&elements[1])),
+                    Box::new(sexp_to_expr(&elements[2])),
+                ),
+            },
             SExp::Leaf("+") => Expr {
                 source: source,
                 kind: ExprKind::Add(
@@ -190,7 +197,7 @@ fn test_parse_string() {
         parse(r#""hello""#),
         Expr {
             source: r#""hello""#,
-            kind: ExprKind::Lit(LiteralKind::String(r#""hello""#))
+            kind: ExprKind::Lit(LiteralKind::String("hello"))
         }
     );
 
@@ -201,11 +208,11 @@ fn test_parse_string() {
             kind: ExprKind::Add(
                 Box::new(Expr {
                     source: r#""hello""#,
-                    kind: ExprKind::Lit(LiteralKind::String(r#""hello""#))
+                    kind: ExprKind::Lit(LiteralKind::String("hello"))
                 }),
                 Box::new(Expr {
                     source: r#""world""#,
-                    kind: ExprKind::Lit(LiteralKind::String(r#""world""#))
+                    kind: ExprKind::Lit(LiteralKind::String("world"))
                 })
             )
         }

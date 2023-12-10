@@ -1,8 +1,9 @@
 use im::hashmap::HashMap;
 use parse::{parse, Expr, ExprKind, LiteralKind};
 use std::cmp::Ordering;
-use std::ops;
+use std::io::Read;
 use std::rc::Rc;
+use std::{io, ops};
 use typecheck::typecheck;
 #[cfg(test)]
 use typecheck::ConcreteType;
@@ -158,11 +159,14 @@ fn get_id<'a, 'b>(id: &str, env: &'b Env<'a>) -> Value<'a> {
 }
 
 fn main() {
-    let y = parse("(letrec f 1 2)");
+    let mut buf = vec![];
+    io::stdin().read_to_end(&mut buf).unwrap();
+    let prog = String::from_utf8(buf).unwrap();
+    let y = parse(&prog);
 
     typecheck(&y);
 
-    println!("{:?}", y);
+    println!("{:?}", eval(&y, &Default::default()));
 }
 
 #[cfg(test)]
